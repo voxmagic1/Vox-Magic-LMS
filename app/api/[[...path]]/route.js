@@ -392,10 +392,14 @@ async function getStaffFromAuth(request, db) {
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
   if (!token) return null
   const session = await db.collection('sessions').findOne({ token })
-  if (!session || session.role !== 'admin' || !session.staffId) return null
+  // Any valid staff session (student sessions carry studentId, not staffId)
+  if (!session || !session.staffId) return null
   const staff = await db.collection('staff').findOne({ id: session.staffId })
   return staff || null
 }
+
+// A staff member with the 'admin' role (legacy accounts without a role are treated as admins)
+const isAdmin = (staff) => !!staff && (staff.role === 'admin' || !staff.role)
 
 function publicStaff(s) {
   if (!s) return null
@@ -897,7 +901,7 @@ async function handleRoute(request, { params }) {
       if (!staff) return json({ error: 'Invalid credentials' }, 401)
       if (sha256(password + staff.salt) !== staff.passwordHash) return json({ error: 'Invalid credentials' }, 401)
       const token = uuidv4()
-      await db.collection('sessions').insertOne({ token, staffId: staff.id, role: 'admin', createdAt: new Date() })
+      await db.collection('sessions').insertOne({ token, staffId: staff.id, role: staff.role || 'admin', createdAt: new Date() })
       return json({ token, staff: publicStaff(staff) })
     }
 
@@ -905,6 +909,135 @@ async function handleRoute(request, { params }) {
       const staff = await getStaffFromAuth(request, db)
       if (!staff) return json({ error: 'Unauthorized' }, 401)
       return json({ staff: publicStaff(staff) })
+    }
+
+    // ---------------- Admin: own profile (name / email / password) ----------------
+    if (route === '/admin/profile' && method === 'PUT') {
+      const staff = await getStaffFromAuth(request, db)
+      if (!staff) return json({ error: 'Unauthorized' }, 401)
+      const b = await request.json()
+      const set = { updatedAt: new Date() }
+      if (typeof b.name === 'string' && b.name.trim()) set.name = b.name.trim()
+      if (typeof b.title === 'string') set.title = b.title.trim()
+      if (typeof b.email === 'string' && b.email.trim()) {
+        const em = b.email.toLowerCase().trim()
+        if (em !== staff.email) {
+          const dup = await db.collection('staff').findOne({ email: em, id: { $ne: staff.id } })
+          if (dup) return json({ error: 'That email is already in use by another account' }, 409)
+          set.email = em
+        }
+      }
+      const changed = []
+      if (b.newPassword) {
+        if (!b.currentPassword) return json({ error: 'Current password is required to set a new one' }, 400)
+        if (sha256(b.currentPassword + staff.salt) !== staff.passwordHash) return json({ error: 'Current password is incorrect' }, 401)
+        if (String(b.newPassword).length < 8) return json({ error: 'New password must be at least 8 characters' }, 400)
+        const salt = crypto.randomBytes(8).toString('hex')
+        set.salt = salt
+        set.passwordHash = sha256(b.newPassword + salt)
+        set.mustResetPassword = false
+        changed.push('password')
+      }
+      await db.collection('staff').updateOne({ id: staff.id }, { $set: set })
+      changed.push(...Object.keys(set).filter((k) => !['updatedAt', 'salt', 'passwordHash', 'mustResetPassword'].includes(k)))
+      await audit(db, staff, 'admin_profile_updated', { changed })
+      const fresh = await db.collection('staff').findOne({ id: staff.id })
+      return json({ ok: true, message: 'Profile updated', staff: publicStaff(fresh) })
+    }
+
+    // Forced first-login password change (no current password if flagged mustResetPassword)
+    if (route === '/admin/profile/first-password' && method === 'POST') {
+      const staff = await getStaffFromAuth(request, db)
+      if (!staff) return json({ error: 'Unauthorized' }, 401)
+      const b = await request.json()
+      if (!b.newPassword || String(b.newPassword).length < 8) return json({ error: 'New password must be at least 8 characters' }, 400)
+      // Only allowed while a reset is pending; otherwise require the standard flow
+      if (!staff.mustResetPassword) return json({ error: 'Use the profile screen to change your password' }, 400)
+      const salt = crypto.randomBytes(8).toString('hex')
+      await db.collection('staff').updateOne({ id: staff.id }, { $set: { salt, passwordHash: sha256(b.newPassword + salt), mustResetPassword: false, updatedAt: new Date() } })
+      await audit(db, staff, 'admin_first_password_set', {})
+      const fresh = await db.collection('staff').findOne({ id: staff.id })
+      return json({ ok: true, message: 'Password set — welcome!', staff: publicStaff(fresh) })
+    }
+
+    // ---------------- Admin: team / staff account management (admin role only) ----------------
+    if (route === '/admin/staff' && method === 'GET') {
+      const staff = await getStaffFromAuth(request, db)
+      if (!staff) return json({ error: 'Unauthorized' }, 401)
+      if (!isAdmin(staff)) return json({ error: 'Admin access required' }, 403)
+      const items = await db.collection('staff').find({}).sort({ createdAt: 1 }).toArray()
+      return json({ staff: items.map((s) => ({ ...publicStaff(s), you: s.id === staff.id })) })
+    }
+
+    if (route === '/admin/staff' && method === 'POST') {
+      const staff = await getStaffFromAuth(request, db)
+      if (!staff) return json({ error: 'Unauthorized' }, 401)
+      if (!isAdmin(staff)) return json({ error: 'Admin access required' }, 403)
+      const b = await request.json()
+      const name = (b.name || '').trim()
+      const email = (b.email || '').toLowerCase().trim()
+      const password = b.password || ''
+      const role = (b.role === 'admin' || b.role === 'staff') ? b.role : 'staff'
+      if (!name || !email || !password) return json({ error: 'Name, email and password are required' }, 400)
+      if (String(password).length < 8) return json({ error: 'Password must be at least 8 characters' }, 400)
+      const dup = await db.collection('staff').findOne({ email })
+      if (dup) return json({ error: 'A staff account with that email already exists' }, 409)
+      const salt = crypto.randomBytes(8).toString('hex')
+      const rec = {
+        id: uuidv4(), role, name, email, title: (b.title || '').trim(),
+        salt, passwordHash: sha256(password + salt), mustResetPassword: true,
+        createdAt: new Date(), createdBy: staff.name,
+      }
+      await db.collection('staff').insertOne(rec)
+      await audit(db, staff, 'staff_created', { email, role })
+      return json({ ok: true, message: `${role === 'admin' ? 'Admin' : 'Staff'} account created`, staff: publicStaff(rec) })
+    }
+
+    if (route.startsWith('/admin/staff/') && method === 'PUT') {
+      const staff = await getStaffFromAuth(request, db)
+      if (!staff) return json({ error: 'Unauthorized' }, 401)
+      if (!isAdmin(staff)) return json({ error: 'Admin access required' }, 403)
+      const id = path[2]
+      const target = await db.collection('staff').findOne({ id })
+      if (!target) return json({ error: 'Staff account not found' }, 404)
+      const b = await request.json()
+      const set = { updatedAt: new Date() }
+      if (typeof b.name === 'string' && b.name.trim()) set.name = b.name.trim()
+      if (typeof b.title === 'string') set.title = b.title.trim()
+      if (b.role === 'admin' || b.role === 'staff') {
+        if (target.id === staff.id && b.role !== 'admin') return json({ error: 'You cannot change your own role' }, 400)
+        set.role = b.role
+      }
+      if (b.newPassword) {
+        if (String(b.newPassword).length < 8) return json({ error: 'Password must be at least 8 characters' }, 400)
+        const salt = crypto.randomBytes(8).toString('hex')
+        set.salt = salt
+        set.passwordHash = sha256(b.newPassword + salt)
+        set.mustResetPassword = true
+        // force re-login for the affected account
+        await db.collection('sessions').deleteMany({ staffId: id })
+      }
+      await db.collection('staff').updateOne({ id }, { $set: set })
+      await audit(db, staff, 'staff_updated', { targetEmail: target.email, changed: Object.keys(set).filter((k) => !['updatedAt', 'salt', 'passwordHash'].includes(k)).concat(b.newPassword ? ['password'] : []) })
+      return json({ ok: true, message: 'Staff account updated' })
+    }
+
+    if (route.startsWith('/admin/staff/') && method === 'DELETE') {
+      const staff = await getStaffFromAuth(request, db)
+      if (!staff) return json({ error: 'Unauthorized' }, 401)
+      if (!isAdmin(staff)) return json({ error: 'Admin access required' }, 403)
+      const id = path[2]
+      if (id === staff.id) return json({ error: 'You cannot delete your own account' }, 400)
+      const target = await db.collection('staff').findOne({ id })
+      if (!target) return json({ error: 'Staff account not found' }, 404)
+      if (isAdmin(target)) {
+        const adminCount = await db.collection('staff').countDocuments({ $or: [{ role: 'admin' }, { role: { $exists: false } }] })
+        if (adminCount <= 1) return json({ error: 'Cannot delete the last remaining admin account' }, 400)
+      }
+      await db.collection('staff').deleteOne({ id })
+      await db.collection('sessions').deleteMany({ staffId: id })
+      await audit(db, staff, 'staff_deleted', { email: target.email })
+      return json({ ok: true, message: 'Staff account removed' })
     }
 
     if (route === '/admin/content' && method === 'GET') {
@@ -993,6 +1126,7 @@ async function handleRoute(request, { params }) {
     if (route === '/admin/payment-settings' && method === 'PUT') {
       const staff = await getStaffFromAuth(request, db)
       if (!staff) return json({ error: 'Unauthorized' }, 401)
+      if (!isAdmin(staff)) return json({ error: 'Admin access required' }, 403)
       const b = await request.json()
       const set = { id: 'payments', updatedAt: new Date(), updatedBy: staff.name }
       if (typeof b.secretKey === 'string' && b.secretKey.trim() && !b.secretKey.includes('\u2026')) set.secretKey = b.secretKey.trim()
@@ -1031,6 +1165,7 @@ async function handleRoute(request, { params }) {
     if (route === '/admin/email-settings' && method === 'PUT') {
       const staff = await getStaffFromAuth(request, db)
       if (!staff) return json({ error: 'Unauthorized' }, 401)
+      if (!isAdmin(staff)) return json({ error: 'Admin access required' }, 403)
       const b = await request.json()
       const set = { id: 'email', updatedAt: new Date(), updatedBy: staff.name }
       if (typeof b.resendApiKey === 'string' && b.resendApiKey.trim() && !b.resendApiKey.includes('\u2026')) set.resendApiKey = b.resendApiKey.trim()
@@ -1071,6 +1206,7 @@ async function handleRoute(request, { params }) {
     if (route === '/admin/storage-settings' && method === 'PUT') {
       const staff = await getStaffFromAuth(request, db)
       if (!staff) return json({ error: 'Unauthorized' }, 401)
+      if (!isAdmin(staff)) return json({ error: 'Admin access required' }, 403)
       const b = await request.json()
       const set = { id: 'storage', updatedAt: new Date(), updatedBy: staff.name }
       if (typeof b.blobToken === 'string' && b.blobToken.trim() && !b.blobToken.includes('\u2026')) set.blobToken = b.blobToken.trim()

@@ -19,6 +19,7 @@ import {
   Phone, Mail, MapPin, Instagram, Facebook, Youtube, Twitter, LogOut, FileText,
   Loader2, ChevronRight, BookOpen, Clock, ShieldCheck, Download, Wallet, Crown,
   PlayCircle, ClipboardList, FolderOpen, Send, Lock, Video, Radio, TrendingUp, Megaphone, Upload,
+  UserPlus, Trash2, KeyRound, UserCog,
 } from 'lucide-react'
 
 const IMG = { logo: '/assets/logo.png', founder: '/assets/founder.png' }
@@ -1243,14 +1244,14 @@ function AdminView({ setView }) {
   const [staff, setStaff] = useState(null)
   const [creds, setCreds] = useState({ email: '', password: '' })
   const [busy, setBusy] = useState(false)
-  const [data, setData] = useState({ stats: null, applications: [], students: [], payments: [], submissions: [], cohorts: [], announcements: [], content: null, lmsConfig: null, paymentSettings: null, emailSettings: null, storageSettings: null, auditLogs: [] })
+  const [data, setData] = useState({ stats: null, applications: [], students: [], payments: [], submissions: [], cohorts: [], announcements: [], content: null, lmsConfig: null, paymentSettings: null, emailSettings: null, storageSettings: null, auditLogs: [], team: [] })
 
   const atoken = () => localStorage.getItem('vm_admin_token')
   const api = (path, opts = {}) => fetch(`/api/admin/${path}`, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${atoken()}`, ...(opts.headers || {}) } })
 
   const loadAll = async () => {
     try {
-      const keys = ['overview', 'applications', 'students', 'payments', 'submissions', 'cohorts', 'announcements', 'content', 'lms', 'payment-settings', 'email-settings', 'storage-settings', 'audit-logs']
+      const keys = ['overview', 'applications', 'students', 'payments', 'submissions', 'cohorts', 'announcements', 'content', 'lms', 'payment-settings', 'email-settings', 'storage-settings', 'audit-logs', 'staff']
       const res = await Promise.all(keys.map((k) => api(k).then((r) => r.ok ? r.json() : {})))
       setData({
         stats: res[0].stats || null,
@@ -1266,6 +1267,7 @@ function AdminView({ setView }) {
         emailSettings: res[10].settings || null,
         storageSettings: res[11].settings || null,
         auditLogs: res[12].logs || [],
+        team: res[13].staff || [],
       })
     } catch { toast.error('Could not load admin data') }
   }
@@ -1313,6 +1315,10 @@ function AdminView({ setView }) {
   }
 
   const s = data.stats
+  if (staff?.mustResetPassword) {
+    return <ForcePasswordReset api={api} staff={staff} onDone={(st) => setStaff(st)} onLogout={logout} />
+  }
+  const admin = !!staff && (staff.role === 'admin' || !staff.role)
   return (
     <div className="min-h-screen bg-brand-cream">
       <div className="bg-brand-navy text-white">
@@ -1344,9 +1350,11 @@ function AdminView({ setView }) {
             <TabsTrigger value="lms">LMS Manager</TabsTrigger>
             <TabsTrigger value="announcements">Announcements</TabsTrigger>
             <TabsTrigger value="cms">Website (CMS)</TabsTrigger>
-            <TabsTrigger value="payments-settings">Payment Settings</TabsTrigger>
-            <TabsTrigger value="integrations">Integrations</TabsTrigger>
-            <TabsTrigger value="audit">Audit Log</TabsTrigger>
+            {admin && <TabsTrigger value="payments-settings">Payment Settings</TabsTrigger>}
+            {admin && <TabsTrigger value="integrations">Integrations</TabsTrigger>}
+            {admin && <TabsTrigger value="team">Team</TabsTrigger>}
+            {admin && <TabsTrigger value="audit">Audit Log</TabsTrigger>}
+            <TabsTrigger value="profile">My Profile</TabsTrigger>
           </TabsList>
 
           <TabsContent value="students" className="mt-6">
@@ -1404,6 +1412,14 @@ function AdminView({ setView }) {
               head={['When', 'Action', 'By', 'Details']}
               rows={(data.auditLogs || []).map((l) => [new Date(l.createdAt).toLocaleString('en-GB'), l.action, l.by, JSON.stringify(l.meta || {})])}
               empty="No audit entries yet." />
+          </TabsContent>
+
+          <TabsContent value="team" className="mt-6">
+            <TeamPanel team={data.team} me={staff} api={api} reload={loadAll} />
+          </TabsContent>
+
+          <TabsContent value="profile" className="mt-6">
+            <AdminProfilePanel staff={staff} api={api} onUpdated={(st) => setStaff(st)} />
           </TabsContent>
         </Tabs>
       </div>
@@ -1819,6 +1835,217 @@ function IntegrationsPanel({ email, storage, api, reload }) {
         <div><Label>Blob Read/Write Token</Label><Input type="password" value={blobToken} onChange={(e) => setBlobToken(e.target.value)} placeholder="vercel_blob_rw_..." className="mt-1.5" /></div>
         <div className="flex justify-end"><Button disabled={busy === 'storage'} onClick={saveStorage} className="bg-brand-purple hover:bg-brand-purple-light">{busy === 'storage' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save storage settings'}</Button></div>
       </div>
+    </div>
+  )
+}
+
+function ForcePasswordReset({ api, staff, onDone, onLogout }) {
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault()
+    if (pw.length < 8) { toast.error('Password must be at least 8 characters'); return }
+    if (pw !== pw2) { toast.error('Passwords do not match'); return }
+    setBusy(true)
+    try {
+      const r = await api('profile/first-password', { method: 'POST', body: JSON.stringify({ newPassword: pw }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success(d.message || 'Password set'); onDone(d.staff) }
+      else toast.error(d.error || 'Could not set password')
+    } catch { toast.error('Network error') } finally { setBusy(false) }
+  }
+  return (
+    <div className="min-h-screen bg-brand-navy flex items-center justify-center p-4">
+      <Card className="w-full max-w-md p-8">
+        <div className="flex justify-center mb-2"><Logo className="h-14" /></div>
+        <div className="flex items-center justify-center gap-2 mt-2"><Lock className="h-5 w-5 text-brand-purple" /><h1 className="font-display text-2xl font-bold text-center text-brand-navy">Secure your account</h1></div>
+        <p className="text-center text-sm text-muted-foreground mt-1">Welcome{staff?.name ? `, ${staff.name}` : ''}. For security, please set a new password before continuing.</p>
+        <form onSubmit={submit} className="mt-6 space-y-4">
+          <div><Label>New password</Label><Input type="password" required value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 8 characters" className="mt-1.5" /></div>
+          <div><Label>Confirm new password</Label><Input type="password" required value={pw2} onChange={(e) => setPw2(e.target.value)} className="mt-1.5" /></div>
+          <Button disabled={busy} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">{busy ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Set password & continue'}</Button>
+        </form>
+        <button onClick={onLogout} className="block mx-auto mt-5 text-sm text-muted-foreground hover:text-brand-navy">← Sign out</button>
+      </Card>
+    </div>
+  )
+}
+
+function AdminProfilePanel({ staff, api, onUpdated }) {
+  const [name, setName] = useState(staff?.name || '')
+  const [title, setTitle] = useState(staff?.title || '')
+  const [email, setEmail] = useState(staff?.email || '')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newPassword2, setNewPassword2] = useState('')
+  const [busy, setBusy] = useState('')
+  useEffect(() => { if (staff) { setName(staff.name || ''); setTitle(staff.title || ''); setEmail(staff.email || '') } }, [staff])
+
+  const saveDetails = async () => {
+    setBusy('details')
+    try {
+      const r = await api('profile', { method: 'PUT', body: JSON.stringify({ name, title, email }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success('Profile updated'); onUpdated(d.staff) } else toast.error(d.error || 'Could not save')
+    } catch { toast.error('Network error') } finally { setBusy('') }
+  }
+  const changePassword = async () => {
+    if (newPassword.length < 8) { toast.error('New password must be at least 8 characters'); return }
+    if (newPassword !== newPassword2) { toast.error('New passwords do not match'); return }
+    if (!currentPassword) { toast.error('Enter your current password'); return }
+    setBusy('password')
+    try {
+      const r = await api('profile', { method: 'PUT', body: JSON.stringify({ currentPassword, newPassword }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success('Password changed'); onUpdated(d.staff); setCurrentPassword(''); setNewPassword(''); setNewPassword2('') }
+      else toast.error(d.error || 'Could not change password')
+    } catch { toast.error('Network error') } finally { setBusy('') }
+  }
+
+  const roleLabel = staff?.role === 'staff' ? 'Staff' : 'Administrator'
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div className="bg-white rounded-2xl border p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div><p className="font-display text-lg font-semibold text-brand-navy">Account details</p><p className="text-sm text-muted-foreground">Update your name, title and sign-in email.</p></div>
+          <Badge className="bg-brand-purple/10 text-brand-purple hover:bg-brand-purple/10">{roleLabel}</Badge>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div><Label>Full name</Label><Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1.5" /></div>
+          <div><Label>Title / role</Label><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Vocal Coach" className="mt-1.5" /></div>
+        </div>
+        <div><Label>Sign-in email</Label><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1.5" /><p className="text-xs text-muted-foreground mt-1">You'll use this email to log in.</p></div>
+        <div className="flex justify-end"><Button disabled={busy === 'details'} onClick={saveDetails} className="bg-brand-purple hover:bg-brand-purple-light">{busy === 'details' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save details'}</Button></div>
+      </div>
+
+      <div className="bg-white rounded-2xl border p-6 space-y-4">
+        <div><p className="font-display text-lg font-semibold text-brand-navy flex items-center gap-2"><KeyRound className="h-4 w-4 text-brand-purple" /> Change password</p><p className="text-sm text-muted-foreground">Enter your current password to set a new one.</p></div>
+        <div><Label>Current password</Label><Input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="mt-1.5" /></div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div><Label>New password</Label><Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" className="mt-1.5" /></div>
+          <div><Label>Confirm new password</Label><Input type="password" value={newPassword2} onChange={(e) => setNewPassword2(e.target.value)} className="mt-1.5" /></div>
+        </div>
+        <div className="flex justify-end"><Button disabled={busy === 'password'} onClick={changePassword} className="bg-brand-navy hover:bg-brand-navy/90">{busy === 'password' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Update password'}</Button></div>
+      </div>
+    </div>
+  )
+}
+
+function TeamPanel({ team, me, api, reload }) {
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({ name: '', email: '', title: '', role: 'staff', password: '' })
+  const [busy, setBusy] = useState(false)
+  const [resetFor, setResetFor] = useState(null)
+  const [resetPw, setResetPw] = useState('')
+
+  const create = async () => {
+    if (!form.name.trim() || !form.email.trim() || !form.password) { toast.error('Name, email and password are required'); return }
+    if (form.password.length < 8) { toast.error('Password must be at least 8 characters'); return }
+    setBusy(true)
+    try {
+      const r = await api('staff', { method: 'POST', body: JSON.stringify(form) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success(d.message || 'Account created'); setOpen(false); setForm({ name: '', email: '', title: '', role: 'staff', password: '' }); reload() }
+      else toast.error(d.error || 'Could not create account')
+    } catch { toast.error('Network error') } finally { setBusy(false) }
+  }
+  const changeRole = async (member, role) => {
+    try {
+      const r = await api(`staff/${member.id}`, { method: 'PUT', body: JSON.stringify({ role }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success('Role updated'); reload() } else toast.error(d.error || 'Could not update')
+    } catch { toast.error('Network error') }
+  }
+  const doReset = async () => {
+    if (resetPw.length < 8) { toast.error('Password must be at least 8 characters'); return }
+    setBusy(true)
+    try {
+      const r = await api(`staff/${resetFor.id}`, { method: 'PUT', body: JSON.stringify({ newPassword: resetPw }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success('Password reset — they must change it on next login'); setResetFor(null); setResetPw('') } else toast.error(d.error || 'Could not reset')
+    } catch { toast.error('Network error') } finally { setBusy(false) }
+  }
+  const remove = async (member) => {
+    if (!confirm(`Remove ${member.name}? This cannot be undone.`)) return
+    try {
+      const r = await api(`staff/${member.id}`, { method: 'DELETE' })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success('Account removed'); reload() } else toast.error(d.error || 'Could not remove')
+    } catch { toast.error('Network error') }
+  }
+
+  return (
+    <div className="max-w-4xl space-y-5">
+      <div className="flex items-center justify-between">
+        <div><p className="font-display text-lg font-semibold text-brand-navy">Team & admin accounts</p><p className="text-sm text-muted-foreground">Create, promote and manage staff and administrators.</p></div>
+        <Button onClick={() => setOpen(true)} className="bg-brand-purple hover:bg-brand-purple-light"><UserPlus className="h-4 w-4 mr-1.5" /> Add account</Button>
+      </div>
+
+      <div className="bg-white rounded-2xl border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-brand-cream text-brand-navy"><tr>{['Name', 'Email', 'Role', 'Status', ''].map((h) => <th key={h} className="text-left font-semibold px-4 py-3">{h}</th>)}</tr></thead>
+          <tbody>
+            {(team || []).length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">No team members yet.</td></tr>}
+            {(team || []).map((m) => (
+              <tr key={m.id} className="border-t">
+                <td className="px-4 py-3 font-medium text-brand-navy">{m.name}{m.you && <span className="ml-2 text-xs text-brand-purple">(you)</span>}{m.title && <div className="text-xs text-muted-foreground font-normal">{m.title}</div>}</td>
+                <td className="px-4 py-3">{m.email}</td>
+                <td className="px-4 py-3">
+                  {m.you ? (
+                    <Badge className="bg-brand-purple/10 text-brand-purple hover:bg-brand-purple/10">{(m.role === 'staff') ? 'Staff' : 'Admin'}</Badge>
+                  ) : (
+                    <select value={m.role === 'staff' ? 'staff' : 'admin'} onChange={(e) => changeRole(m, e.target.value)} className="border rounded-md px-2 py-1 text-sm bg-white">
+                      <option value="admin">Admin</option>
+                      <option value="staff">Staff</option>
+                    </select>
+                  )}
+                </td>
+                <td className="px-4 py-3">{m.mustResetPassword ? <span className="text-amber-600 text-xs">Password reset pending</span> : <span className="text-emerald-600 text-xs">Active</span>}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2 justify-end">
+                    <Button size="sm" variant="outline" onClick={() => { setResetFor(m); setResetPw('') }}><KeyRound className="h-3.5 w-3.5 mr-1" /> Reset</Button>
+                    {!m.you && <Button size="sm" variant="outline" onClick={() => remove(m)} className="text-brand-red border-brand-red/30 hover:bg-brand-red/10 hover:text-brand-red"><Trash2 className="h-3.5 w-3.5" /></Button>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><UserPlus className="h-5 w-5 text-brand-purple" /> Add team account</DialogTitle></DialogHeader>
+          <div className="space-y-3 mt-2">
+            <div><Label>Full name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1.5" /></div>
+            <div><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="mt-1.5" /></div>
+            <div><Label>Title (optional)</Label><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Vocal Coach" className="mt-1.5" /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Role</Label>
+                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="mt-1.5 w-full border rounded-md px-3 h-10 bg-white">
+                  <option value="staff">Staff (coach)</option>
+                  <option value="admin">Administrator</option>
+                </select>
+              </div>
+              <div><Label>Temporary password</Label><Input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Min 8 characters" className="mt-1.5" /></div>
+            </div>
+            <p className="text-xs text-muted-foreground">They'll be asked to set their own password on first login. Admins manage settings & integrations; staff manage students, grading and LMS.</p>
+            <div className="flex justify-end gap-2 pt-1"><Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button disabled={busy} onClick={create} className="bg-brand-purple hover:bg-brand-purple-light">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Create account'}</Button></div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!resetFor} onOpenChange={(o) => { if (!o) setResetFor(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><KeyRound className="h-5 w-5 text-brand-purple" /> Reset password</DialogTitle></DialogHeader>
+          <div className="space-y-3 mt-2">
+            <p className="text-sm text-muted-foreground">Set a temporary password for <b className="text-brand-navy">{resetFor?.name}</b>. They must change it on next login.</p>
+            <div><Label>Temporary password</Label><Input type="text" value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="Min 8 characters" className="mt-1.5" /></div>
+            <div className="flex justify-end gap-2 pt-1"><Button variant="outline" onClick={() => setResetFor(null)}>Cancel</Button><Button disabled={busy} onClick={doReset} className="bg-brand-navy hover:bg-brand-navy/90">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Reset password'}</Button></div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

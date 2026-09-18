@@ -45,7 +45,7 @@ async function main() {
   const admin = {
     id: uuidv4(), role: 'admin', name: 'Damian Nworgu', email: adminEmail,
     title: 'Vocal Coach / Music Director',
-    salt: asalt, passwordHash: sha256(adminPass + asalt), createdAt: now,
+    salt: asalt, passwordHash: sha256(adminPass + asalt), mustResetPassword: true, createdAt: now,
   }
   await db.collection('staff').insertOne(admin)
   console.log('Seeded admin:', adminEmail, '/', adminPass, 'id=', admin.id)
