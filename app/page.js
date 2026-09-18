@@ -755,10 +755,100 @@ function LoginView({ setView, onLogin }) {
           <div><Label>Password</Label><Input type="password" required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="mt-1.5" /></div>
           <Button disabled={busy} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">{busy ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Sign In'}</Button>
         </form>
-        <div className="flex justify-between mt-5 text-sm">
+        <button onClick={() => setView('forgot')} className="block w-full text-center mt-4 text-sm text-brand-purple hover:underline">Forgot your password?</button>
+        <div className="flex justify-between mt-4 text-sm">
           <button onClick={() => setView('home')} className="text-muted-foreground hover:text-brand-navy">&larr; Home</button>
           <button onClick={() => setView('apply')} className="text-brand-red font-medium">New here? Apply</button>
         </div>
+      </Card>
+    </div>
+  )
+}
+
+function ForgotPasswordView({ setView }) {
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [sent, setSent] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true)
+    try {
+      const r = await fetch('/api/auth/forgot-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) })
+      const d = await r.json()
+      if (r.ok) setSent(true)
+      else toast.error(d.error || 'Something went wrong')
+    } catch { toast.error('Network error') } finally { setBusy(false) }
+  }
+  return (
+    <div className="min-h-screen brand-gradient flex items-center justify-center p-4">
+      <Card className="w-full max-w-md p-8">
+        <div className="flex justify-center mb-2"><Logo className="h-14" /></div>
+        <h1 className="font-display text-2xl font-bold text-center text-brand-navy">Forgot password</h1>
+        {sent ? (
+          <div className="mt-6 text-center space-y-4">
+            <div className="mx-auto w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center"><Mail className="h-7 w-7 text-emerald-600" /></div>
+            <p className="text-muted-foreground">If an account exists for <b className="text-brand-navy">{email}</b>, we've sent a password reset link. Please check your inbox (and spam folder). The link is valid for 60 minutes.</p>
+            <Button onClick={() => setView('login')} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">Back to sign in</Button>
+          </div>
+        ) : (
+          <>
+            <p className="text-center text-sm text-muted-foreground mt-1">Enter your email and we'll send you a reset link.</p>
+            <form onSubmit={submit} className="mt-6 space-y-4">
+              <div><Label>Email</Label><Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="mt-1.5" /></div>
+              <Button disabled={busy} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">{busy ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Send reset link'}</Button>
+            </form>
+            <button onClick={() => setView('login')} className="block w-full text-center mt-5 text-sm text-muted-foreground hover:text-brand-navy">&larr; Back to sign in</button>
+          </>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+function ResetPasswordView({ setView }) {
+  const [token, setToken] = useState('')
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('token') || ''
+    setToken(t)
+  }, [])
+  const submit = async (e) => {
+    e.preventDefault()
+    if (pw.length < 8) { toast.error('Password must be at least 8 characters'); return }
+    if (pw !== pw2) { toast.error('Passwords do not match'); return }
+    setBusy(true)
+    try {
+      const r = await fetch('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, newPassword: pw }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { setDone(true); toast.success('Password reset') }
+      else toast.error(d.error || 'Could not reset password')
+    } catch { toast.error('Network error') } finally { setBusy(false) }
+  }
+  return (
+    <div className="min-h-screen brand-gradient flex items-center justify-center p-4">
+      <Card className="w-full max-w-md p-8">
+        <div className="flex justify-center mb-2"><Logo className="h-14" /></div>
+        <div className="flex items-center justify-center gap-2 mt-2"><Lock className="h-5 w-5 text-brand-purple" /><h1 className="font-display text-2xl font-bold text-center text-brand-navy">Set a new password</h1></div>
+        {done ? (
+          <div className="mt-6 text-center space-y-4">
+            <div className="mx-auto w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center"><CheckCircle2 className="h-7 w-7 text-emerald-600" /></div>
+            <p className="text-muted-foreground">Your password has been reset. You can now sign in with your new password.</p>
+            <Button onClick={() => setView('login')} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">Go to sign in</Button>
+          </div>
+        ) : !token ? (
+          <div className="mt-6 text-center space-y-4">
+            <p className="text-muted-foreground">This reset link is missing or invalid. Please request a new one.</p>
+            <Button onClick={() => setView('forgot')} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">Request a new link</Button>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="mt-6 space-y-4">
+            <div><Label>New password</Label><Input type="password" required value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 8 characters" className="mt-1.5" /></div>
+            <div><Label>Confirm new password</Label><Input type="password" required value={pw2} onChange={(e) => setPw2(e.target.value)} className="mt-1.5" /></div>
+            <Button disabled={busy} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">{busy ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Reset password'}</Button>
+          </form>
+        )}
       </Card>
     </div>
   )
@@ -790,6 +880,78 @@ function AdmissionLetter({ letter, student }) {
         <p className="text-sm text-muted-foreground">{letter.signatoryTitle}</p>
       </div>
       <div className="mt-6 pt-5 border-t text-center text-xs text-muted-foreground">Vox Magic — Damichromes School of Music Limited (DSML) • Cast The Spell With The Rhythm</div>
+    </div>
+  )
+}
+
+function StudentForcePasswordReset({ authToken, student, onDone, onLogout }) {
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (e) => {
+    e.preventDefault()
+    if (pw.length < 8) { toast.error('Password must be at least 8 characters'); return }
+    if (pw !== pw2) { toast.error('Passwords do not match'); return }
+    setBusy(true)
+    try {
+      const r = await fetch('/api/students/first-password', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }, body: JSON.stringify({ newPassword: pw }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success(d.message || 'Password set'); onDone() }
+      else toast.error(d.error || 'Could not set password')
+    } catch { toast.error('Network error') } finally { setBusy(false) }
+  }
+  return (
+    <div className="min-h-screen brand-gradient flex items-center justify-center p-4">
+      <Card className="w-full max-w-md p-8">
+        <div className="flex justify-center mb-2"><Logo className="h-14" /></div>
+        <div className="flex items-center justify-center gap-2 mt-2"><Lock className="h-5 w-5 text-brand-purple" /><h1 className="font-display text-2xl font-bold text-center text-brand-navy">Secure your account</h1></div>
+        <p className="text-center text-sm text-muted-foreground mt-1">Welcome{student?.name ? `, ${student.name.split(' ')[0]}` : ''}! For your security, please replace your temporary password with one only you know.</p>
+        <form onSubmit={submit} className="mt-6 space-y-4">
+          <div><Label>New password</Label><Input type="password" required value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 8 characters" className="mt-1.5" /></div>
+          <div><Label>Confirm new password</Label><Input type="password" required value={pw2} onChange={(e) => setPw2(e.target.value)} className="mt-1.5" /></div>
+          <Button disabled={busy} className="w-full h-12 bg-brand-purple hover:bg-brand-purple-light font-semibold">{busy ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Set password & continue'}</Button>
+        </form>
+        <button onClick={onLogout} className="block mx-auto mt-5 text-sm text-muted-foreground hover:text-brand-navy">← Sign out</button>
+      </Card>
+    </div>
+  )
+}
+
+function StudentAccountPanel({ authToken, student }) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newPassword2, setNewPassword2] = useState('')
+  const [busy, setBusy] = useState(false)
+  const change = async () => {
+    if (!currentPassword) { toast.error('Enter your current password'); return }
+    if (newPassword.length < 8) { toast.error('New password must be at least 8 characters'); return }
+    if (newPassword !== newPassword2) { toast.error('New passwords do not match'); return }
+    setBusy(true)
+    try {
+      const r = await fetch('/api/students/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }, body: JSON.stringify({ currentPassword, newPassword }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success(d.message || 'Password changed'); setCurrentPassword(''); setNewPassword(''); setNewPassword2('') }
+      else toast.error(d.error || 'Could not change password')
+    } catch { toast.error('Network error') } finally { setBusy(false) }
+  }
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div className="bg-white rounded-2xl border p-6 space-y-3">
+        <p className="font-display text-lg font-semibold text-brand-navy">Account details</p>
+        <div className="grid sm:grid-cols-2 gap-3 text-sm">
+          <div className="rounded-xl bg-brand-cream p-4"><p className="text-muted-foreground">Name</p><p className="font-semibold text-brand-navy">{student.name}</p></div>
+          <div className="rounded-xl bg-brand-cream p-4"><p className="text-muted-foreground">Email</p><p className="font-semibold text-brand-navy break-all">{student.email}</p></div>
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl border p-6 space-y-4">
+        <div><p className="font-display text-lg font-semibold text-brand-navy flex items-center gap-2"><KeyRound className="h-4 w-4 text-brand-purple" /> Change password</p><p className="text-sm text-muted-foreground">Enter your current password to set a new one.</p></div>
+        <div><Label>Current password</Label><Input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className="mt-1.5" /></div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div><Label>New password</Label><Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" className="mt-1.5" /></div>
+          <div><Label>Confirm new password</Label><Input type="password" value={newPassword2} onChange={(e) => setNewPassword2(e.target.value)} className="mt-1.5" /></div>
+        </div>
+        <div className="flex justify-end"><Button disabled={busy} onClick={change} className="bg-brand-purple hover:bg-brand-purple-light">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Update password'}</Button></div>
+      </div>
     </div>
   )
 }
@@ -865,6 +1027,7 @@ function PortalView({ setView }) {
   if (loading) return <div className="min-h-screen flex items-center justify-center"><Loader2 className="h-10 w-10 animate-spin text-brand-purple" /></div>
   if (!data) return null
   const { student, tuition, payments } = data
+  if (student.mustResetPassword) return <StudentForcePasswordReset authToken={token()} student={student} onDone={load} onLogout={logout} />
 
   return (
     <div className="min-h-screen bg-brand-cream">
@@ -898,6 +1061,7 @@ function PortalView({ setView }) {
             <TabsTrigger value="certificate">Certificate</TabsTrigger>
             <TabsTrigger value="tuition">Tuition</TabsTrigger>
             <TabsTrigger value="admission">Admission</TabsTrigger>
+            <TabsTrigger value="account">Account</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="mt-6">
@@ -928,6 +1092,9 @@ function PortalView({ setView }) {
                 <AdmissionLetter letter={student.admissionLetter} student={student} />
               </div>
             ) : <p className="text-muted-foreground">Your admission letter will appear here after registration is confirmed.</p>}
+          </TabsContent>
+          <TabsContent value="account" className="mt-6">
+            <StudentAccountPanel authToken={token()} student={student} />
           </TabsContent>
         </Tabs>
       </div>
@@ -1430,6 +1597,9 @@ function AdminView({ setView }) {
 function StudentsPanel({ students, cohorts, api, reload }) {
   const [filter, setFilter] = useState('all')
   const [busyId, setBusyId] = useState('')
+  const [resetFor, setResetFor] = useState(null)
+  const [resetPw, setResetPw] = useState('')
+  const [resetBusy, setResetBusy] = useState(false)
   const assign = async (studentId, cohortId) => {
     setBusyId(studentId)
     try {
@@ -1437,6 +1607,15 @@ function StudentsPanel({ students, cohorts, api, reload }) {
       const d = await r.json()
       if (r.ok) { toast.success(d.message || 'Updated'); reload() } else toast.error(d.error || 'Could not update')
     } catch { toast.error('Network error') } finally { setBusyId('') }
+  }
+  const doReset = async () => {
+    if (resetPw.length < 8) { toast.error('Password must be at least 8 characters'); return }
+    setResetBusy(true)
+    try {
+      const r = await api('students/reset-password', { method: 'POST', body: JSON.stringify({ studentId: resetFor.id, newPassword: resetPw }) })
+      const d = await r.json()
+      if (r.ok && d.ok) { toast.success(d.message || 'Password reset'); setResetFor(null); setResetPw('') } else toast.error(d.error || 'Could not reset')
+    } catch { toast.error('Network error') } finally { setResetBusy(false) }
   }
   const list = filter === 'all' ? students : filter === 'none' ? students.filter((s) => !s.cohortId) : students.filter((s) => s.cohortId === filter)
   return (
@@ -1453,7 +1632,7 @@ function StudentsPanel({ students, cohorts, api, reload }) {
       {list.length === 0 ? <div className="bg-white rounded-2xl border p-8 text-center text-muted-foreground">No students in this view.</div> : (
         <div className="bg-white rounded-2xl border overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="bg-brand-cream text-left">{['Name', 'Email', 'Track', 'Tuition', 'Progress', 'Cohort'].map((h) => <th key={h} className="px-4 py-3 font-semibold text-brand-navy whitespace-nowrap">{h}</th>)}</tr></thead>
+            <thead><tr className="bg-brand-cream text-left">{['Name', 'Email', 'Track', 'Tuition', 'Progress', 'Cohort', 'Actions'].map((h) => <th key={h} className="px-4 py-3 font-semibold text-brand-navy whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
               {list.map((st) => (
                 <tr key={st.id} className="border-t">
@@ -1468,12 +1647,26 @@ function StudentsPanel({ students, cohorts, api, reload }) {
                       {cohorts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <Button size="sm" variant="outline" onClick={() => { setResetFor(st); setResetPw('') }}><KeyRound className="h-3.5 w-3.5 mr-1" /> Reset password</Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <Dialog open={!!resetFor} onOpenChange={(o) => { if (!o) setResetFor(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><KeyRound className="h-5 w-5 text-brand-purple" /> Reset student password</DialogTitle></DialogHeader>
+          <div className="space-y-3 mt-2">
+            <p className="text-sm text-muted-foreground">Set a temporary password for <b className="text-brand-navy">{resetFor?.name}</b> ({resetFor?.email}). They will be required to choose a new password on their next login, and any active sessions will be signed out.</p>
+            <div><Label>Temporary password</Label><Input type="text" value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="Min 8 characters" className="mt-1.5" /></div>
+            <div className="flex justify-end gap-2 pt-1"><Button variant="outline" onClick={() => setResetFor(null)}>Cancel</Button><Button disabled={resetBusy} onClick={doReset} className="bg-brand-navy hover:bg-brand-navy/90">{resetBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Reset password'}</Button></div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -2427,10 +2620,10 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const v = params.get('view')
-    if (v && ['apply', 'login', 'portal', 'admin'].includes(v)) setViewState(v)
+    if (v && ['apply', 'login', 'portal', 'admin', 'forgot', 'reset'].includes(v)) setViewState(v)
     const onPop = () => {
       const p = new URLSearchParams(window.location.search).get('view')
-      setViewState(p && ['apply', 'login', 'portal', 'admin'].includes(p) ? p : 'home')
+      setViewState(p && ['apply', 'login', 'portal', 'admin', 'forgot', 'reset'].includes(p) ? p : 'home')
     }
     window.addEventListener('popstate', onPop)
     fetch('/api/content').then((r) => r.json()).then((d) => { if (d.content) setContent(withDefaults(d.content)) }).catch(() => {})
@@ -2439,6 +2632,8 @@ export default function App() {
 
   if (view === 'apply') return <ApplyView setView={setView} />
   if (view === 'login') return <LoginView setView={setView} onLogin={() => setView('portal')} />
+  if (view === 'forgot') return <ForgotPasswordView setView={setView} />
+  if (view === 'reset') return <ResetPasswordView setView={setView} />
   if (view === 'portal') return <PortalView setView={setView} />
   if (view === 'admin') return <AdminView setView={setView} />
 

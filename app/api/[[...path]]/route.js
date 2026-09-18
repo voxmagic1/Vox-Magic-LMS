@@ -387,6 +387,24 @@ function admissionEmailHtml({ name, email, tempPassword, admissionNo, cohortStar
   </div>`
 }
 
+function passwordResetEmailHtml({ name, resetUrl }) {
+  return `
+  <div style="font-family:Inter,Arial,sans-serif;max-width:560px;margin:auto;color:#0A1F44">
+    <div style="background:linear-gradient(120deg,#3B0F73,#1E40E0);padding:24px;border-radius:16px 16px 0 0;color:#fff">
+      <h1 style="margin:0;font-size:22px">Reset your password 🔑</h1>
+      <p style="margin:6px 0 0;opacity:.85">Vox Magic · Damichromes School of Music (DSML)</p>
+    </div>
+    <div style="border:1px solid #eee;border-top:0;padding:24px;border-radius:0 0 16px 16px">
+      <p>Dear ${esc(name || 'Student')},</p>
+      <p>We received a request to reset the password for your Vox Magic student portal. Click the button below to choose a new password. This link is valid for <b>60 minutes</b>.</p>
+      <p><a href="${esc(resetUrl)}" style="display:inline-block;background:#1E40E0;color:#fff;text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:600">Reset my password</a></p>
+      <p style="color:#666;font-size:13px">If the button doesn't work, copy and paste this link into your browser:<br/><span style="color:#1E40E0;word-break:break-all">${esc(resetUrl)}</span></p>
+      <p style="color:#666;font-size:13px">If you didn't request this, you can safely ignore this email — your password will not change.</p>
+      <p style="color:#666;font-size:13px;margin-top:24px">Cast The Spell With The Rhythm · Vox Magic (DSML)</p>
+    </div>
+  </div>`
+}
+
 async function getStaffFromAuth(request, db) {
   const auth = request.headers.get('authorization') || ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
@@ -766,6 +784,70 @@ async function handleRoute(request, { params }) {
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : null
       if (token) await db.collection('sessions').deleteOne({ token })
       return json({ ok: true })
+    }
+
+    // Student: change own password (requires current password)
+    if (route === '/students/change-password' && method === 'POST') {
+      const student = await getStudentFromAuth(request, db)
+      if (!student) return json({ error: 'Unauthorized' }, 401)
+      const { currentPassword, newPassword } = await request.json()
+      if (!currentPassword || !newPassword) return json({ error: 'Current and new password are required' }, 400)
+      if (sha256(currentPassword + student.salt) !== student.passwordHash) return json({ error: 'Current password is incorrect' }, 401)
+      if (String(newPassword).length < 8) return json({ error: 'New password must be at least 8 characters' }, 400)
+      const salt = crypto.randomBytes(8).toString('hex')
+      await db.collection('students').updateOne({ id: student.id }, { $set: { salt, passwordHash: sha256(newPassword + salt), mustResetPassword: false, tempPasswordPlain: null, updatedAt: new Date() } })
+      return json({ ok: true, message: 'Password changed successfully' })
+    }
+
+    // Student: forced first-login password change (only while flagged)
+    if (route === '/students/first-password' && method === 'POST') {
+      const student = await getStudentFromAuth(request, db)
+      if (!student) return json({ error: 'Unauthorized' }, 401)
+      const { newPassword } = await request.json()
+      if (!newPassword || String(newPassword).length < 8) return json({ error: 'New password must be at least 8 characters' }, 400)
+      if (!student.mustResetPassword) return json({ error: 'Use the change-password screen instead' }, 400)
+      const salt = crypto.randomBytes(8).toString('hex')
+      await db.collection('students').updateOne({ id: student.id }, { $set: { salt, passwordHash: sha256(newPassword + salt), mustResetPassword: false, tempPasswordPlain: null, updatedAt: new Date() } })
+      const fresh = await db.collection('students').findOne({ id: student.id })
+      return json({ ok: true, message: 'Password set — welcome!', student: publicStudent(fresh) })
+    }
+
+    // Student: forgot password — send reset link (generic response to avoid email enumeration)
+    if (route === '/auth/forgot-password' && method === 'POST') {
+      const { email } = await request.json()
+      if (!email) return json({ error: 'Email is required' }, 400)
+      const generic = { ok: true, message: 'If an account exists for that email, a reset link has been sent.' }
+      const student = await db.collection('students').findOne({ email: String(email).toLowerCase() })
+      if (!student) return json(generic)
+      const token = crypto.randomBytes(24).toString('hex')
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+      await db.collection('password_resets').insertOne({ id: uuidv4(), token, studentId: student.id, email: student.email, used: false, expiresAt, createdAt: new Date() })
+      const resetUrl = `${APP_URL}/?view=reset&token=${token}`
+      const emailCfg = await getEmailConfig(db)
+      const mail = await sendMail({
+        to: student.email,
+        subject: 'Reset your Vox Magic portal password',
+        html: passwordResetEmailHtml({ name: student.name, resetUrl }),
+        text: `Reset your Vox Magic password using this link (valid 60 minutes): ${resetUrl}`,
+      }, emailCfg)
+      await db.collection('notifications').insertOne({ id: uuidv4(), type: 'password_reset', to: student.email, subject: 'Reset your Vox Magic portal password', createdAt: new Date(), emailStatus: mail.ok ? 'sent' : 'failed', emailError: mail.ok ? null : mail.error })
+      return json(generic)
+    }
+
+    // Student: reset password via token
+    if (route === '/auth/reset-password' && method === 'POST') {
+      const { token, newPassword } = await request.json()
+      if (!token || !newPassword) return json({ error: 'Token and new password are required' }, 400)
+      if (String(newPassword).length < 8) return json({ error: 'New password must be at least 8 characters' }, 400)
+      const rec = await db.collection('password_resets').findOne({ token })
+      if (!rec || rec.used || new Date(rec.expiresAt) < new Date()) return json({ error: 'This reset link is invalid or has expired. Please request a new one.' }, 400)
+      const student = await db.collection('students').findOne({ id: rec.studentId })
+      if (!student) return json({ error: 'Account not found' }, 404)
+      const salt = crypto.randomBytes(8).toString('hex')
+      await db.collection('students').updateOne({ id: student.id }, { $set: { salt, passwordHash: sha256(newPassword + salt), mustResetPassword: false, tempPasswordPlain: null, updatedAt: new Date() } })
+      await db.collection('password_resets').updateOne({ token }, { $set: { used: true, usedAt: new Date() } })
+      await db.collection('sessions').deleteMany({ studentId: student.id })
+      return json({ ok: true, message: 'Password reset successfully. You can now log in with your new password.' })
     }
 
     // ---------------- Student portal ----------------
@@ -1285,6 +1367,21 @@ async function handleRoute(request, { params }) {
         return { id: s.id, name: s.name, email: s.email, admissionNo: s.admissionNo, cohortId: s.cohortId || null, cohortName: s.cohortName || null, tuitionTrack: s.tuitionTrack, tuitionStatus: s.tuitionStatus, tuitionPaid: s.tuitionPaid || 0, status: s.status, progress: percent }
       })
       return json({ students: out })
+    }
+
+    if (route === '/admin/students/reset-password' && method === 'POST') {
+      const staff = await getStaffFromAuth(request, db)
+      if (!staff) return json({ error: 'Unauthorized' }, 401)
+      const { studentId, newPassword } = await request.json()
+      if (!studentId || !newPassword) return json({ error: 'studentId and newPassword are required' }, 400)
+      if (String(newPassword).length < 8) return json({ error: 'Password must be at least 8 characters' }, 400)
+      const student = await db.collection('students').findOne({ id: studentId })
+      if (!student) return json({ error: 'Student not found' }, 404)
+      const salt = crypto.randomBytes(8).toString('hex')
+      await db.collection('students').updateOne({ id: studentId }, { $set: { salt, passwordHash: sha256(newPassword + salt), mustResetPassword: true, tempPasswordPlain: null, updatedAt: new Date() } })
+      await db.collection('sessions').deleteMany({ studentId })
+      await audit(db, staff, 'student_password_reset', { studentEmail: student.email })
+      return json({ ok: true, message: `Password reset for ${student.name}. They must set a new password on next login.` })
     }
 
     if (route === '/admin/students/assign-cohort' && method === 'POST') {

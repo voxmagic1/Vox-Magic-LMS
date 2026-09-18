@@ -24,7 +24,7 @@ async function main() {
   const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
   const student = {
     id: uuidv4(), role: 'student', name: 'LMS Tester', email,
-    salt, passwordHash: sha256(password + salt), mustResetPassword: true,
+    salt, passwordHash: sha256(password + salt), mustResetPassword: false,
     admissionNo: 'DSML/VM-2026-TEST01',
     admissionLetter: {
       admissionNo: 'DSML/VM-2026-TEST01', issuedAt: now.toISOString(), studentName: 'LMS Tester',

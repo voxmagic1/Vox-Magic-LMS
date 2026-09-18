@@ -1,617 +1,556 @@
 #!/usr/bin/env python3
 """
-Backend API Test Suite for Vox Magic Admin Account Management
-Tests all admin account-management endpoints as per review request
+Backend API test for Vox Magic password management features
+Tests student password change, forgot password, reset password, and admin password reset
 """
 
 import requests
 import json
+import os
 import sys
+from pymongo import MongoClient
+from dotenv import load_dotenv
+import subprocess
 
-# Base URL from environment
-BASE_URL = "https://damichromes-vocal.preview.emergentagent.com/api"
+# Load environment variables
+load_dotenv('/app/.env')
+
+BASE_URL = os.getenv('NEXT_PUBLIC_BASE_URL', 'http://localhost:3000')
+API_URL = f"{BASE_URL}/api"
+MONGO_URL = os.getenv('MONGO_URL', 'mongodb://localhost:27017')
+DB_NAME = os.getenv('DB_NAME', 'your_database_name')
 
 # Test credentials
-ADMIN_EMAIL = "admin@voxmagic.test"
-ADMIN_PASSWORD = "Admin1234"
 STUDENT_EMAIL = "lms.tester@voxmagic.test"
 STUDENT_PASSWORD = "Test1234"
+ADMIN_EMAIL = "admin@voxmagic.test"
+ADMIN_PASSWORD = "Admin1234"
 
-# Color codes for output
-GREEN = '\033[92m'
-RED = '\033[91m'
-YELLOW = '\033[93m'
-BLUE = '\033[94m'
-RESET = '\033[0m'
+# Global variable for reset token
+RESET_TOKEN = None
 
-def log_test(name, passed, details=""):
-    """Log test result with color"""
-    status = f"{GREEN}✅ PASS{RESET}" if passed else f"{RED}❌ FAIL{RESET}"
-    print(f"{status} - {name}")
-    if details:
-        print(f"  {details}")
-    return passed
+def print_test(msg):
+    print(f"\n{'='*80}")
+    print(f"TEST: {msg}")
+    print('='*80)
 
-def test_admin_login_and_me():
-    """Test 1: Admin login works; GET /api/admin/me returns staff object with mustResetPassword=true"""
-    print(f"\n{BLUE}=== Test 1: Admin Login and mustResetPassword Flag ==={RESET}")
+def print_success(msg):
+    print(f"✅ SUCCESS: {msg}")
+
+def print_error(msg):
+    print(f"❌ ERROR: {msg}")
+
+def print_info(msg):
+    print(f"ℹ️  INFO: {msg}")
+
+# Test 1: Student change password
+def test_student_change_password():
+    print_test("1. POST /api/students/change-password (as student)")
     
     try:
-        # Test admin login
-        response = requests.post(f"{BASE_URL}/admin/login", json={
+        # First login as student
+        print_info("Logging in as student...")
+        login_resp = requests.post(f"{API_URL}/auth/login", json={
+            "email": STUDENT_EMAIL,
+            "password": STUDENT_PASSWORD
+        })
+        
+        if login_resp.status_code != 200:
+            print_error(f"Student login failed: {login_resp.status_code} - {login_resp.text}")
+            return False
+        
+        token = login_resp.json().get('token')
+        print_success(f"Student login successful, token: {token[:20]}...")
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Test 1a: Missing fields
+        print_info("Test 1a: Missing currentPassword or newPassword -> 400")
+        resp = requests.post(f"{API_URL}/students/change-password", json={
+            "currentPassword": "Test1234"
+        }, headers=headers)
+        
+        if resp.status_code == 400:
+            print_success(f"Missing newPassword correctly returns 400")
+        else:
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 1b: Wrong current password
+        print_info("Test 1b: Wrong currentPassword -> 401")
+        resp = requests.post(f"{API_URL}/students/change-password", json={
+            "currentPassword": "WrongPassword123",
+            "newPassword": "NewPassword123"
+        }, headers=headers)
+        
+        if resp.status_code == 401:
+            print_success(f"Wrong currentPassword correctly returns 401")
+        else:
+            print_error(f"Expected 401, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 1c: New password too short
+        print_info("Test 1c: newPassword < 8 chars -> 400")
+        resp = requests.post(f"{API_URL}/students/change-password", json={
+            "currentPassword": STUDENT_PASSWORD,
+            "newPassword": "Short1"
+        }, headers=headers)
+        
+        if resp.status_code == 400:
+            print_success(f"Short newPassword correctly returns 400")
+        else:
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 1d: Valid password change
+        print_info("Test 1d: Valid password change to 'StudentNew123' -> 200")
+        resp = requests.post(f"{API_URL}/students/change-password", json={
+            "currentPassword": STUDENT_PASSWORD,
+            "newPassword": "StudentNew123"
+        }, headers=headers)
+        
+        if resp.status_code == 200 and resp.json().get('ok') == True:
+            print_success(f"Password changed successfully: {resp.json()}")
+        else:
+            print_error(f"Expected 200 with ok:true, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 1e: Verify new password works
+        print_info("Test 1e: Verify new password 'StudentNew123' works by logging in")
+        login_resp2 = requests.post(f"{API_URL}/auth/login", json={
+            "email": STUDENT_EMAIL,
+            "password": "StudentNew123"
+        })
+        
+        if login_resp2.status_code == 200:
+            print_success(f"Login with new password successful")
+            new_token = login_resp2.json().get('token')
+        else:
+            print_error(f"Login with new password failed: {login_resp2.status_code} - {login_resp2.text}")
+            return False
+        
+        # Test 1f: Change password back to original
+        print_info("Test 1f: Change password back to 'Test1234' to preserve defaults")
+        headers_new = {"Authorization": f"Bearer {new_token}"}
+        resp = requests.post(f"{API_URL}/students/change-password", json={
+            "currentPassword": "StudentNew123",
+            "newPassword": STUDENT_PASSWORD
+        }, headers=headers_new)
+        
+        if resp.status_code == 200 and resp.json().get('ok') == True:
+            print_success(f"Password changed back to original successfully")
+        else:
+            print_error(f"Failed to change password back: {resp.status_code}: {resp.text}")
+            return False
+        
+        print_success("All student change-password tests passed!")
+        return True
+        
+    except Exception as e:
+        print_error(f"Exception in test_student_change_password: {str(e)}")
+        return False
+
+# Test 2: Forgot password
+def test_forgot_password():
+    print_test("2. POST /api/auth/forgot-password (no auth)")
+    
+    try:
+        # Test 2a: Missing email
+        print_info("Test 2a: Missing email -> 400")
+        resp = requests.post(f"{API_URL}/auth/forgot-password", json={})
+        
+        if resp.status_code == 400:
+            print_success(f"Missing email correctly returns 400")
+        else:
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 2b: Valid email (student exists)
+        print_info(f"Test 2b: Valid email {STUDENT_EMAIL} -> 200 with generic message")
+        resp = requests.post(f"{API_URL}/auth/forgot-password", json={
+            "email": STUDENT_EMAIL
+        })
+        
+        if resp.status_code == 200 and resp.json().get('ok') == True:
+            print_success(f"Forgot password returns 200: {resp.json()}")
+        else:
+            print_error(f"Expected 200 with ok:true, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Verify password_resets doc was created in MongoDB
+        print_info("Verifying password_resets doc was created in MongoDB...")
+        client = MongoClient(MONGO_URL)
+        db = client[DB_NAME]
+        reset_doc = db.password_resets.find_one({"email": STUDENT_EMAIL}, sort=[("createdAt", -1)])
+        
+        if reset_doc:
+            print_success(f"Password reset doc created: token={reset_doc['token'][:20]}..., used={reset_doc['used']}, expiresAt={reset_doc['expiresAt']}")
+            # Store token for later use
+            global RESET_TOKEN
+            RESET_TOKEN = reset_doc['token']
+        else:
+            print_error(f"No password_resets doc found for {STUDENT_EMAIL}")
+            return False
+        
+        # Test 2c: Non-existent email (should also return 200 to avoid enumeration)
+        print_info("Test 2c: Non-existent email -> 200 (no enumeration)")
+        resp = requests.post(f"{API_URL}/auth/forgot-password", json={
+            "email": "nobody-doesnotexist@example.com"
+        })
+        
+        if resp.status_code == 200 and resp.json().get('ok') == True:
+            print_success(f"Non-existent email also returns 200 (correct)")
+        else:
+            print_error(f"Expected 200 with ok:true, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Verify NO password_resets doc was created for non-existent email
+        print_info("Verifying NO password_resets doc was created for non-existent email...")
+        reset_doc2 = db.password_resets.find_one({"email": "nobody-doesnotexist@example.com"})
+        
+        if not reset_doc2:
+            print_success(f"Correctly, no password_resets doc created for non-existent email")
+        else:
+            print_error(f"Unexpectedly found password_resets doc for non-existent email")
+            return False
+        
+        client.close()
+        print_success("All forgot-password tests passed!")
+        return True
+        
+    except Exception as e:
+        print_error(f"Exception in test_forgot_password: {str(e)}")
+        return False
+
+# Test 3: Reset password
+def test_reset_password():
+    print_test("3. POST /api/auth/reset-password (no auth)")
+    
+    try:
+        # Test 3a: Invalid token
+        print_info("Test 3a: Invalid token -> 400")
+        resp = requests.post(f"{API_URL}/auth/reset-password", json={
+            "token": "garbage",
+            "newPassword": "Whatever123"
+        })
+        
+        if resp.status_code == 400:
+            print_success(f"Invalid token correctly returns 400")
+        else:
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 3b: New password too short
+        print_info("Test 3b: newPassword < 8 chars -> 400")
+        resp = requests.post(f"{API_URL}/auth/reset-password", json={
+            "token": "sometoken",
+            "newPassword": "Short1"
+        })
+        
+        if resp.status_code == 400:
+            print_success(f"Short newPassword correctly returns 400")
+        else:
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 3c: Valid token and password (HAPPY PATH)
+        print_info(f"Test 3c: Valid token with newPassword 'ResetFlow123' -> 200")
+        resp = requests.post(f"{API_URL}/auth/reset-password", json={
+            "token": RESET_TOKEN,
+            "newPassword": "ResetFlow123"
+        })
+        
+        if resp.status_code == 200 and resp.json().get('ok') == True:
+            print_success(f"Password reset successful: {resp.json()}")
+        else:
+            print_error(f"Expected 200 with ok:true, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 3d: Try to use the same token again (should fail - token now used)
+        print_info("Test 3d: Reusing same token -> 400 (token now used)")
+        resp = requests.post(f"{API_URL}/auth/reset-password", json={
+            "token": RESET_TOKEN,
+            "newPassword": "AnotherPassword123"
+        })
+        
+        if resp.status_code == 400:
+            print_success(f"Reused token correctly returns 400")
+        else:
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
+        
+        # Test 3e: Verify student can log in with new password
+        print_info("Test 3e: Verify student can log in with 'ResetFlow123'")
+        login_resp = requests.post(f"{API_URL}/auth/login", json={
+            "email": STUDENT_EMAIL,
+            "password": "ResetFlow123"
+        })
+        
+        if login_resp.status_code == 200:
+            print_success(f"Login with reset password successful")
+            token = login_resp.json().get('token')
+        else:
+            print_error(f"Login with reset password failed: {login_resp.status_code} - {login_resp.text}")
+            return False
+        
+        # Test 3f: Change password back to original using change-password
+        print_info("Test 3f: Change password back to 'Test1234' via change-password")
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = requests.post(f"{API_URL}/students/change-password", json={
+            "currentPassword": "ResetFlow123",
+            "newPassword": STUDENT_PASSWORD
+        }, headers=headers)
+        
+        if resp.status_code == 200 and resp.json().get('ok') == True:
+            print_success(f"Password changed back to original successfully")
+        else:
+            print_error(f"Failed to change password back: {resp.status_code}: {resp.text}")
+            return False
+        
+        print_success("All reset-password tests passed!")
+        return True
+        
+    except Exception as e:
+        print_error(f"Exception in test_reset_password: {str(e)}")
+        return False
+
+# Test 4: Admin reset student password
+def test_admin_reset_student_password():
+    print_test("4. POST /api/admin/students/reset-password (as admin)")
+    
+    try:
+        # First login as admin
+        print_info("Logging in as admin...")
+        login_resp = requests.post(f"{API_URL}/admin/login", json={
             "email": ADMIN_EMAIL,
             "password": ADMIN_PASSWORD
         })
         
-        if response.status_code != 200:
-            return log_test("Admin login", False, f"Expected 200, got {response.status_code}: {response.text}")
+        if login_resp.status_code != 200:
+            print_error(f"Admin login failed: {login_resp.status_code} - {login_resp.text}")
+            return False
         
-        data = response.json()
-        if "token" not in data or "staff" not in data:
-            return log_test("Admin login", False, f"Missing token or staff in response: {data}")
+        admin_token = login_resp.json().get('token')
+        print_success(f"Admin login successful, token: {admin_token[:20]}...")
         
-        admin_token = data["token"]
-        staff = data["staff"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
         
-        log_test("Admin login successful", True, f"Token: {admin_token[:20]}..., Staff: {staff.get('name')}")
+        # Get student ID
+        print_info("Getting student list to find lms.tester's studentId...")
+        resp = requests.get(f"{API_URL}/admin/students", headers=admin_headers)
         
-        # Test GET /api/admin/me
-        response = requests.get(f"{BASE_URL}/admin/me", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
+        if resp.status_code != 200:
+            print_error(f"Failed to get students: {resp.status_code} - {resp.text}")
+            return False
         
-        if response.status_code != 200:
-            return log_test("GET /api/admin/me", False, f"Expected 200, got {response.status_code}")
+        students = resp.json().get('students', [])
+        student = next((s for s in students if s['email'] == STUDENT_EMAIL), None)
         
-        data = response.json()
-        staff = data.get("staff", {})
+        if not student:
+            print_error(f"Student {STUDENT_EMAIL} not found in students list")
+            return False
         
-        # Check mustResetPassword flag
-        must_reset = staff.get("mustResetPassword")
-        if must_reset is True:
-            log_test("GET /api/admin/me returns mustResetPassword=true", True, f"Staff: {staff.get('name')}, mustResetPassword: {must_reset}")
+        student_id = student['id']
+        print_success(f"Found student ID: {student_id}")
+        
+        # Test 4a: Missing fields
+        print_info("Test 4a: Missing studentId or newPassword -> 400")
+        resp = requests.post(f"{API_URL}/admin/students/reset-password", json={
+            "studentId": student_id
+        }, headers=admin_headers)
+        
+        if resp.status_code == 400:
+            print_success(f"Missing newPassword correctly returns 400")
         else:
-            log_test("GET /api/admin/me mustResetPassword check", False, f"Expected mustResetPassword=true (boolean), got: {must_reset} (type: {type(must_reset)})")
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
         
-        return admin_token
+        # Test 4b: New password too short
+        print_info("Test 4b: newPassword < 8 chars -> 400")
+        resp = requests.post(f"{API_URL}/admin/students/reset-password", json={
+            "studentId": student_id,
+            "newPassword": "Short1"
+        }, headers=admin_headers)
         
-    except Exception as e:
-        log_test("Admin login and /me", False, f"Exception: {str(e)}")
-        return None
-
-def test_create_staff_account(admin_token):
-    """Test 2: POST /api/admin/staff validation and account creation"""
-    print(f"\n{BLUE}=== Test 2: POST /api/admin/staff (Create Staff Account) ==={RESET}")
-    
-    try:
-        # Test missing name
-        response = requests.post(f"{BASE_URL}/admin/staff", 
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"email": "test@example.com", "password": "Test1234"}
-        )
-        log_test("Missing name -> 400", response.status_code == 400, f"Status: {response.status_code}")
-        
-        # Test missing email
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"name": "Test User", "password": "Test1234"}
-        )
-        log_test("Missing email -> 400", response.status_code == 400, f"Status: {response.status_code}")
-        
-        # Test missing password
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"name": "Test User", "email": "test@example.com"}
-        )
-        log_test("Missing password -> 400", response.status_code == 400, f"Status: {response.status_code}")
-        
-        # Test password shorter than 8 chars
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"name": "Test User", "email": "test@example.com", "password": "Short1"}
-        )
-        log_test("Password < 8 chars -> 400", response.status_code == 400, f"Status: {response.status_code}")
-        
-        # Test duplicate email (reuse admin email)
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"name": "Test User", "email": ADMIN_EMAIL, "password": "Test1234"}
-        )
-        log_test("Duplicate email -> 409", response.status_code == 409, f"Status: {response.status_code}")
-        
-        # Test valid staff creation with role="staff"
-        new_staff_email = f"teststaff_{requests.get(f'{BASE_URL}/health').elapsed.total_seconds()}@voxmagic.test"
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "Test Staff Member",
-                "email": new_staff_email,
-                "password": "StaffPass123",
-                "role": "staff"
-            }
-        )
-        
-        if response.status_code != 200:
-            log_test("Create staff with role='staff'", False, f"Expected 200, got {response.status_code}: {response.text}")
-            return None, None
-        
-        data = response.json()
-        staff = data.get("staff", {})
-        
-        # Verify response
-        checks = []
-        checks.append(("passwordHash not in response", "passwordHash" not in staff))
-        checks.append(("salt not in response", "salt" not in staff))
-        checks.append(("role is 'staff'", staff.get("role") == "staff"))
-        checks.append(("mustResetPassword is true", staff.get("mustResetPassword") is True))
-        checks.append(("has id", "id" in staff))
-        checks.append(("has email", staff.get("email") == new_staff_email))
-        
-        all_passed = all(check[1] for check in checks)
-        details = ", ".join([f"{check[0]}: {check[1]}" for check in checks])
-        log_test("Create staff account with role='staff'", all_passed, details)
-        
-        staff_id = staff.get("id")
-        
-        # Test valid admin creation with role="admin"
-        new_admin_email = f"testadmin_{requests.get(f'{BASE_URL}/health').elapsed.total_seconds()}@voxmagic.test"
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "Test Admin Member",
-                "email": new_admin_email,
-                "password": "AdminPass123",
-                "role": "admin"
-            }
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            staff = data.get("staff", {})
-            log_test("Create staff with role='admin'", staff.get("role") == "admin", f"Role: {staff.get('role')}")
-            admin_staff_id = staff.get("id")
+        if resp.status_code == 400:
+            print_success(f"Short newPassword correctly returns 400")
         else:
-            log_test("Create staff with role='admin'", False, f"Status: {response.status_code}")
-            admin_staff_id = None
+            print_error(f"Expected 400, got {resp.status_code}: {resp.text}")
+            return False
         
-        # Test invalid role defaults to "staff"
-        invalid_role_email = f"invalidrole_{requests.get(f'{BASE_URL}/health').elapsed.total_seconds()}@voxmagic.test"
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "Invalid Role User",
-                "email": invalid_role_email,
-                "password": "InvalidRole123",
-                "role": "superuser"
-            }
-        )
+        # Test 4c: Unknown studentId
+        print_info("Test 4c: Unknown studentId -> 404")
+        resp = requests.post(f"{API_URL}/admin/students/reset-password", json={
+            "studentId": "unknown-student-id-12345",
+            "newPassword": "ValidPassword123"
+        }, headers=admin_headers)
         
-        if response.status_code == 200:
-            data = response.json()
-            staff = data.get("staff", {})
-            log_test("Invalid role defaults to 'staff'", staff.get("role") == "staff", f"Role: {staff.get('role')}")
+        if resp.status_code == 404:
+            print_success(f"Unknown studentId correctly returns 404")
+        else:
+            print_error(f"Expected 404, got {resp.status_code}: {resp.text}")
+            return False
         
-        return new_staff_email, staff_id
+        # Test 4d: Valid reset
+        print_info("Test 4d: Valid reset with newPassword 'AdminSet123' -> 200")
+        resp = requests.post(f"{API_URL}/admin/students/reset-password", json={
+            "studentId": student_id,
+            "newPassword": "AdminSet123"
+        }, headers=admin_headers)
         
-    except Exception as e:
-        log_test("Create staff account", False, f"Exception: {str(e)}")
-        return None, None
-
-def test_list_staff_accounts(admin_token):
-    """Test 3: GET /api/admin/staff lists accounts"""
-    print(f"\n{BLUE}=== Test 3: GET /api/admin/staff (List Accounts) ==={RESET}")
-    
-    try:
-        response = requests.get(f"{BASE_URL}/admin/staff", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
+        if resp.status_code == 200 and resp.json().get('ok') == True:
+            print_success(f"Admin password reset successful: {resp.json()}")
+        else:
+            print_error(f"Expected 200 with ok:true, got {resp.status_code}: {resp.text}")
+            return False
         
-        if response.status_code != 200:
-            return log_test("GET /api/admin/staff", False, f"Expected 200, got {response.status_code}")
+        # Test 4e: Verify mustResetPassword is true in MongoDB
+        print_info("Verifying mustResetPassword=true in MongoDB...")
+        client = MongoClient(MONGO_URL)
+        db = client[DB_NAME]
+        student_doc = db.students.find_one({"id": student_id})
         
-        data = response.json()
-        staff_list = data.get("staff", [])
+        if student_doc and student_doc.get('mustResetPassword') == True:
+            print_success(f"mustResetPassword is correctly set to true")
+        else:
+            print_error(f"mustResetPassword is not true: {student_doc.get('mustResetPassword')}")
+            return False
         
-        if not isinstance(staff_list, list):
-            return log_test("GET /api/admin/staff", False, f"Expected list, got {type(staff_list)}")
+        # Test 4f: Verify prior student sessions were removed
+        print_info("Verifying prior student sessions were removed...")
+        session_count = db.sessions.count_documents({"studentId": student_id})
         
-        # Check that accounts don't have passwordHash/salt
-        has_sensitive = any("passwordHash" in s or "salt" in s for s in staff_list)
-        has_you_flag = any("you" in s for s in staff_list)
+        if session_count == 0:
+            print_success(f"All prior student sessions removed (count: {session_count})")
+        else:
+            print_error(f"Found {session_count} sessions for student (expected 0)")
+            return False
         
-        log_test("GET /api/admin/staff returns list", True, f"Count: {len(staff_list)}, Has 'you' flag: {has_you_flag}, No sensitive data: {not has_sensitive}")
+        # Test 4g: Verify audit log entry
+        print_info("Verifying audit log entry for 'student_password_reset'...")
+        resp = requests.get(f"{API_URL}/admin/audit-logs", headers=admin_headers)
         
+        if resp.status_code == 200:
+            logs_data = resp.json()
+            # Handle both array and object with logs key
+            logs = logs_data if isinstance(logs_data, list) else logs_data.get('logs', [])
+            reset_log = next((log for log in logs if isinstance(log, dict) and log.get('action') == 'student_password_reset'), None)
+            if reset_log:
+                print_success(f"Found audit log entry: {reset_log}")
+            else:
+                print_error(f"No 'student_password_reset' audit log entry found")
+                return False
+        else:
+            print_error(f"Failed to get audit logs: {resp.status_code} - {resp.text}")
+            return False
+        
+        client.close()
+        print_success("All admin reset-password tests passed!")
         return True
         
     except Exception as e:
-        log_test("List staff accounts", False, f"Exception: {str(e)}")
+        print_error(f"Exception in test_admin_reset_student_password: {str(e)}")
         return False
 
-def test_staff_first_password_flow(staff_email):
-    """Test 4: Login as newly created staff and test first-password flow"""
-    print(f"\n{BLUE}=== Test 4: Staff First-Password Flow ==={RESET}")
+# Test 5: Final cleanup
+def test_final_cleanup():
+    print_test("5. FINAL CLEANUP - Run seed script to restore defaults")
     
     try:
-        # Login as the newly created staff
-        response = requests.post(f"{BASE_URL}/admin/login", json={
-            "email": staff_email,
-            "password": "StaffPass123"
+        print_info("Running: node /app/scripts/seed_test_student.js")
+        result = subprocess.run(
+            ["node", "/app/scripts/seed_test_student.js"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        print_info(f"Seed script output:\n{result.stdout}")
+        
+        if result.returncode != 0:
+            print_error(f"Seed script failed with exit code {result.returncode}")
+            print_error(f"Error output: {result.stderr}")
+            return False
+        
+        print_success("Seed script executed successfully")
+        
+        # Verify admin login works
+        print_info("Verifying admin login with Admin1234...")
+        login_resp = requests.post(f"{API_URL}/admin/login", json={
+            "email": ADMIN_EMAIL,
+            "password": ADMIN_PASSWORD
         })
         
-        if response.status_code != 200:
-            return log_test("Staff login", False, f"Expected 200, got {response.status_code}: {response.text}")
-        
-        data = response.json()
-        staff_token = data["token"]
-        
-        log_test("Staff login successful", True, f"Email: {staff_email}")
-        
-        # GET /api/admin/me should show mustResetPassword=true
-        response = requests.get(f"{BASE_URL}/admin/me", headers={
-            "Authorization": f"Bearer {staff_token}"
-        })
-        
-        if response.status_code != 200:
-            return log_test("Staff GET /api/admin/me", False, f"Expected 200, got {response.status_code}")
-        
-        data = response.json()
-        staff = data.get("staff", {})
-        must_reset = staff.get("mustResetPassword")
-        
-        log_test("Staff mustResetPassword=true", must_reset is True, f"mustResetPassword: {must_reset}")
-        
-        # POST /api/admin/profile/first-password with new password
-        response = requests.post(f"{BASE_URL}/admin/profile/first-password",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={"newPassword": "NewStaffPass123"}
-        )
-        
-        if response.status_code != 200:
-            log_test("POST /api/admin/profile/first-password", False, f"Expected 200, got {response.status_code}: {response.text}")
-            return staff_token
-        
-        log_test("POST /api/admin/profile/first-password successful", True, "Password changed")
-        
-        # Verify flag is cleared
-        response = requests.get(f"{BASE_URL}/admin/me", headers={
-            "Authorization": f"Bearer {staff_token}"
-        })
-        
-        if response.status_code == 200:
-            data = response.json()
-            staff = data.get("staff", {})
-            must_reset = staff.get("mustResetPassword")
-            log_test("mustResetPassword cleared after first-password", must_reset is False, f"mustResetPassword: {must_reset}")
-        
-        # Try calling first-password again (should fail with 400)
-        response = requests.post(f"{BASE_URL}/admin/profile/first-password",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={"newPassword": "AnotherPass123"}
-        )
-        
-        log_test("Calling first-password again -> 400", response.status_code == 400, f"Status: {response.status_code}")
-        
-        # Test staff role restrictions (should get 403 for admin-only endpoints)
-        print(f"\n{YELLOW}Testing staff role restrictions:{RESET}")
-        
-        # PUT /api/admin/payment-settings should return 403
-        response = requests.put(f"{BASE_URL}/admin/payment-settings",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={"mode": "test"}
-        )
-        log_test("Staff PUT /api/admin/payment-settings -> 403", response.status_code == 403, f"Status: {response.status_code}")
-        
-        # PUT /api/admin/email-settings should return 403
-        response = requests.put(f"{BASE_URL}/admin/email-settings",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={"mailFrom": "test@example.com"}
-        )
-        log_test("Staff PUT /api/admin/email-settings -> 403", response.status_code == 403, f"Status: {response.status_code}")
-        
-        # PUT /api/admin/storage-settings should return 403
-        response = requests.put(f"{BASE_URL}/admin/storage-settings",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={"blobToken": "test"}
-        )
-        log_test("Staff PUT /api/admin/storage-settings -> 403", response.status_code == 403, f"Status: {response.status_code}")
-        
-        # GET /api/admin/staff should return 403
-        response = requests.get(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {staff_token}"}
-        )
-        log_test("Staff GET /api/admin/staff -> 403", response.status_code == 403, f"Status: {response.status_code}")
-        
-        return staff_token
-        
-    except Exception as e:
-        log_test("Staff first-password flow", False, f"Exception: {str(e)}")
-        return None
-
-def test_update_own_profile(staff_token):
-    """Test 5: PUT /api/admin/profile (update own profile)"""
-    print(f"\n{BLUE}=== Test 5: PUT /api/admin/profile (Update Own Profile) ==={RESET}")
-    
-    try:
-        # Update name and title
-        response = requests.put(f"{BASE_URL}/admin/profile",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={
-                "name": "Updated Staff Name",
-                "title": "Senior Staff Member"
-            }
-        )
-        
-        if response.status_code != 200:
-            log_test("Update name/title", False, f"Expected 200, got {response.status_code}: {response.text}")
+        if login_resp.status_code == 200:
+            admin_data = login_resp.json()
+            print_success(f"Admin login successful: token={admin_data.get('token')[:20]}...")
         else:
-            data = response.json()
-            staff = data.get("staff", {})
-            log_test("Update name/title", True, f"Name: {staff.get('name')}, Title: {staff.get('title')}")
+            print_error(f"Admin login failed: {login_resp.status_code} - {login_resp.text}")
+            return False
         
-        # Change email to a new unique value
-        new_email = f"updated_staff_{requests.get(f'{BASE_URL}/health').elapsed.total_seconds()}@voxmagic.test"
-        response = requests.put(f"{BASE_URL}/admin/profile",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={"email": new_email}
-        )
+        # Verify student login works
+        print_info("Verifying student login with Test1234...")
+        login_resp = requests.post(f"{API_URL}/auth/login", json={
+            "email": STUDENT_EMAIL,
+            "password": STUDENT_PASSWORD
+        })
         
-        if response.status_code != 200:
-            log_test("Change email to unique value", False, f"Expected 200, got {response.status_code}: {response.text}")
+        if login_resp.status_code == 200:
+            student_data = login_resp.json()
+            student = student_data.get('student', {})
+            print_success(f"Student login successful: token={student_data.get('token')[:20]}...")
+            print_success(f"Student mustResetPassword={student.get('mustResetPassword')}")
+            
+            if student.get('mustResetPassword') == False:
+                print_success("Student mustResetPassword is correctly False")
+            else:
+                print_error(f"Student mustResetPassword should be False, got {student.get('mustResetPassword')}")
+                return False
         else:
-            data = response.json()
-            staff = data.get("staff", {})
-            log_test("Change email to unique value", True, f"New email: {staff.get('email')}")
+            print_error(f"Student login failed: {login_resp.status_code} - {login_resp.text}")
+            return False
         
-        # Try to change email to an already used email (admin email)
-        response = requests.put(f"{BASE_URL}/admin/profile",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={"email": ADMIN_EMAIL}
-        )
-        log_test("Change email to duplicate -> 409", response.status_code == 409, f"Status: {response.status_code}")
-        
-        # Password change with wrong currentPassword
-        response = requests.put(f"{BASE_URL}/admin/profile",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={
-                "currentPassword": "WrongPassword",
-                "newPassword": "NewPassword123"
-            }
-        )
-        log_test("Password change with wrong currentPassword -> 401", response.status_code == 401, f"Status: {response.status_code}")
-        
-        # Password change with correct currentPassword
-        response = requests.put(f"{BASE_URL}/admin/profile",
-            headers={"Authorization": f"Bearer {staff_token}"},
-            json={
-                "currentPassword": "NewStaffPass123",
-                "newPassword": "FinalPassword123"
-            }
-        )
-        log_test("Password change with correct currentPassword", response.status_code == 200, f"Status: {response.status_code}")
-        
+        print_success("Final cleanup completed successfully!")
         return True
         
     except Exception as e:
-        log_test("Update own profile", False, f"Exception: {str(e)}")
-        return False
-
-def test_update_staff_member(admin_token, staff_id):
-    """Test 6: PUT /api/admin/staff/{id} (update staff member)"""
-    print(f"\n{BLUE}=== Test 6: PUT /api/admin/staff/{{id}} (Update Staff Member) ==={RESET}")
-    
-    try:
-        # Change staff member's role from staff to admin
-        response = requests.put(f"{BASE_URL}/admin/staff/{staff_id}",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"role": "admin"}
-        )
-        log_test("Change role from staff to admin", response.status_code == 200, f"Status: {response.status_code}")
-        
-        # Reset a member's password
-        response = requests.put(f"{BASE_URL}/admin/staff/{staff_id}",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"newPassword": "ResetPass123"}
-        )
-        
-        if response.status_code != 200:
-            log_test("Reset member's password", False, f"Expected 200, got {response.status_code}: {response.text}")
-        else:
-            log_test("Reset member's password", True, "Password reset successful")
-            
-            # Verify mustResetPassword is set to true after password reset
-            # We can't directly check this without logging in as that user, but we can verify the endpoint worked
-        
-        # Try to change own role to staff (should fail with 400)
-        response = requests.put(f"{BASE_URL}/admin/staff/{staff_id}",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={"role": "staff"}
-        )
-        
-        # Note: This test is for the admin changing their OWN role, not the staff member's role
-        # We need to get the admin's own staff ID first
-        response = requests.get(f"{BASE_URL}/admin/me", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
-        
-        if response.status_code == 200:
-            data = response.json()
-            admin_staff_id = data.get("staff", {}).get("id")
-            
-            # Try to change own role to staff
-            response = requests.put(f"{BASE_URL}/admin/staff/{admin_staff_id}",
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={"role": "staff"}
-            )
-            log_test("Attempting to change own role to staff -> 400", response.status_code == 400, f"Status: {response.status_code}")
-        
-        return True
-        
-    except Exception as e:
-        log_test("Update staff member", False, f"Exception: {str(e)}")
-        return False
-
-def test_delete_staff_member(admin_token):
-    """Test 7: DELETE /api/admin/staff/{id}"""
-    print(f"\n{BLUE}=== Test 7: DELETE /api/admin/staff/{{id}} (Delete Staff Member) ==={RESET}")
-    
-    try:
-        # Get admin's own ID
-        response = requests.get(f"{BASE_URL}/admin/me", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
-        
-        if response.status_code != 200:
-            return log_test("Get admin ID", False, f"Expected 200, got {response.status_code}")
-        
-        admin_staff_id = response.json().get("staff", {}).get("id")
-        
-        # Try to delete own account (should fail with 400)
-        response = requests.delete(f"{BASE_URL}/admin/staff/{admin_staff_id}",
-            headers={"Authorization": f"Bearer {admin_token}"}
-        )
-        log_test("Deleting own account -> 400", response.status_code == 400, f"Status: {response.status_code}")
-        
-        # Create a temporary staff account to delete
-        temp_email = f"temp_delete_{requests.get(f'{BASE_URL}/health').elapsed.total_seconds()}@voxmagic.test"
-        response = requests.post(f"{BASE_URL}/admin/staff",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            json={
-                "name": "Temp Delete User",
-                "email": temp_email,
-                "password": "TempPass123",
-                "role": "staff"
-            }
-        )
-        
-        if response.status_code != 200:
-            return log_test("Create temp staff for deletion", False, f"Expected 200, got {response.status_code}")
-        
-        temp_staff_id = response.json().get("staff", {}).get("id")
-        
-        # Delete the temp staff account
-        response = requests.delete(f"{BASE_URL}/admin/staff/{temp_staff_id}",
-            headers={"Authorization": f"Bearer {admin_token}"}
-        )
-        log_test("Delete staff account", response.status_code == 200, f"Status: {response.status_code}")
-        
-        # Verify sessions are cleared (try to use a token from that account - we don't have one, so skip this)
-        
-        # Test deleting last admin (should be blocked)
-        # First, count how many admins we have
-        response = requests.get(f"{BASE_URL}/admin/staff", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
-        
-        if response.status_code == 200:
-            staff_list = response.json().get("staff", [])
-            admin_count = sum(1 for s in staff_list if s.get("role") == "admin" or not s.get("role"))
-            
-            print(f"  Current admin count: {admin_count}")
-            
-            # If we have more than 1 admin, try to delete one (but not ourselves)
-            if admin_count > 1:
-                # Find an admin that's not us
-                other_admin = next((s for s in staff_list if (s.get("role") == "admin" or not s.get("role")) and s.get("id") != admin_staff_id), None)
-                
-                if other_admin:
-                    # If this is the last admin after deletion, it should fail
-                    # But since we have multiple admins, let's just verify the endpoint works
-                    print(f"  Note: Multiple admins exist, so last-admin protection not tested in this run")
-        
-        return True
-        
-    except Exception as e:
-        log_test("Delete staff member", False, f"Exception: {str(e)}")
-        return False
-
-def test_sanity_checks(admin_token):
-    """Test 8: Sanity check - ensure previously-working endpoints still work"""
-    print(f"\n{BLUE}=== Test 8: Sanity Checks (Previously-Working Endpoints) ==={RESET}")
-    
-    try:
-        # GET /api/admin/overview
-        response = requests.get(f"{BASE_URL}/admin/overview", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
-        log_test("GET /api/admin/overview", response.status_code == 200, f"Status: {response.status_code}")
-        
-        # GET /api/admin/students
-        response = requests.get(f"{BASE_URL}/admin/students", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
-        log_test("GET /api/admin/students", response.status_code == 200, f"Status: {response.status_code}")
-        
-        # GET /api/admin/audit-logs
-        response = requests.get(f"{BASE_URL}/admin/audit-logs", headers={
-            "Authorization": f"Bearer {admin_token}"
-        })
-        
-        if response.status_code == 200:
-            data = response.json()
-            logs = data.get("logs", [])
-            
-            # Check for new audit log entries
-            staff_actions = [log for log in logs if log.get("action") in ["staff_created", "staff_updated", "staff_deleted", "admin_profile_updated", "admin_first_password_set"]]
-            
-            log_test("GET /api/admin/audit-logs", True, f"Status: 200, Total logs: {len(logs)}, Staff-related logs: {len(staff_actions)}")
-            
-            if staff_actions:
-                print(f"  {YELLOW}Sample staff-related audit log entries:{RESET}")
-                for log in staff_actions[:3]:
-                    print(f"    - {log.get('action')} by {log.get('by')}")
-        else:
-            log_test("GET /api/admin/audit-logs", False, f"Expected 200, got {response.status_code}")
-        
-        return True
-        
-    except Exception as e:
-        log_test("Sanity checks", False, f"Exception: {str(e)}")
+        print_error(f"Exception in test_final_cleanup: {str(e)}")
         return False
 
 def main():
-    """Run all tests"""
-    print(f"\n{BLUE}{'='*80}{RESET}")
-    print(f"{BLUE}Vox Magic - Admin Account Management Backend API Tests{RESET}")
-    print(f"{BLUE}{'='*80}{RESET}")
-    print(f"Base URL: {BASE_URL}")
-    print(f"Admin: {ADMIN_EMAIL}")
+    print("\n" + "="*80)
+    print("VOX MAGIC PASSWORD MANAGEMENT BACKEND TESTS")
+    print("="*80)
     
-    # Test 1: Admin login and mustResetPassword flag
-    admin_token = test_admin_login_and_me()
-    if not admin_token:
-        print(f"\n{RED}CRITICAL: Admin login failed. Cannot continue tests.{RESET}")
-        sys.exit(1)
+    results = []
     
-    # Test 2: Create staff account
-    staff_email, staff_id = test_create_staff_account(admin_token)
-    if not staff_email or not staff_id:
-        print(f"\n{RED}CRITICAL: Staff account creation failed. Some tests will be skipped.{RESET}")
+    # Run all tests
+    results.append(("Student change-password", test_student_change_password()))
+    results.append(("Forgot password", test_forgot_password()))
+    results.append(("Reset password", test_reset_password()))
+    results.append(("Admin reset student password", test_admin_reset_student_password()))
+    results.append(("Final cleanup", test_final_cleanup()))
     
-    # Test 3: List staff accounts
-    test_list_staff_accounts(admin_token)
+    # Summary
+    print("\n" + "="*80)
+    print("TEST SUMMARY")
+    print("="*80)
     
-    # Test 4: Staff first-password flow (only if staff was created)
-    staff_token = None
-    if staff_email:
-        staff_token = test_staff_first_password_flow(staff_email)
+    passed = sum(1 for _, result in results if result)
+    total = len(results)
     
-    # Test 5: Update own profile (only if staff token exists)
-    if staff_token:
-        test_update_own_profile(staff_token)
+    for test_name, result in results:
+        status = "✅ PASS" if result else "❌ FAIL"
+        print(f"{status}: {test_name}")
     
-    # Test 6: Update staff member (only if staff was created)
-    if staff_id:
-        test_update_staff_member(admin_token, staff_id)
+    print(f"\nTotal: {passed}/{total} tests passed")
     
-    # Test 7: Delete staff member
-    test_delete_staff_member(admin_token)
-    
-    # Test 8: Sanity checks
-    test_sanity_checks(admin_token)
-    
-    print(f"\n{BLUE}{'='*80}{RESET}")
-    print(f"{GREEN}All tests completed!{RESET}")
-    print(f"{BLUE}{'='*80}{RESET}\n")
+    if passed == total:
+        print("\n🎉 ALL TESTS PASSED!")
+        return 0
+    else:
+        print(f"\n⚠️  {total - passed} test(s) failed")
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
